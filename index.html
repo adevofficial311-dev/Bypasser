@@ -347,20 +347,181 @@
     // Query param
     for (const param of ["key", "id", "c", "ref", "token"]) {
       const val = parsed.searchParams.get(param);
-      if (val) return val;
+      if (val) return val;<script>
+  let lastResult = "";
+
+  function log(msg, type = "info") {
+    const box = document.getElementById("log");
+    const line = document.createElement("div");
+    line.className = `log-line log-${type}`;
+    line.textContent = msg;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function clearLog() {
+    document.getElementById("log").innerHTML = "";
+    document.getElementById("resultBox").classList.remove("visible");
+    lastResult = "";
+  }
+
+  function showResult(url) {
+    lastResult = url;
+    document.getElementById("resultUrl").textContent = url;
+    document.getElementById("resultBox").classList.add("visible");
+  }
+
+  function copyResult() {
+    if (!lastResult) return;
+    navigator.clipboard.writeText(lastResult).then(() => log("[+] Copied.", "ok"));
+  }
+
+  function openResult() {
+    if (!lastResult) return;
+    window.open(lastResult, "_blank", "noopener");
+  }
+
+  async function runBypass() {
+    const url = document.getElementById("urlInput").value.trim();
+    if (!url) return;
+    clearLog();
+    document.getElementById("bypassBtn").disabled = true;
+    log(`[*] Target: ${url}`, "step");
+    try {
+      const result = await bypass(url);
+      if (result.startsWith("[!]")) {
+        log(result, "err");
+      } else {
+        log(`[+] Resolved: ${result}`, "ok");
+        showResult(result);
+      }
+    } catch (e) {
+      log(`[!] Fatal: ${e.message}`, "err");
+    }
+    document.getElementById("bypassBtn").disabled = false;
+  }
+
+  async function bypass(url) {
+    const parsed = new URL(url);
+    const host = parsed.hostname;
+
+    // Fixed: accept all lootlabs/lootlink subdomains
+    if (!host.includes("lootlabs") && !host.includes("lootlink")) {
+      return "[!] Unsupported domain: " + host;
     }
 
-    // Inline JS
-    const match = html.match(/['"]key['"]\s*:\s*['"]([a-zA-Z0-9_-]{6,})['"]/);
+    const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+    log("[*] Fetching page via proxy...", "step");
+
+    const pageResp = await fetch(proxy);
+    if (!pageResp.ok) throw new Error("Proxy fetch failed: " + pageResp.status);
+
+    const pageData = await pageResp.json();
+    const html = pageData.contents;
+    if (!html) return "[!] Empty page response";
+
+    log("[*] Page fetched. Scanning __NEXT_DATA__...", "step");
+
+    const nextMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
+    if (nextMatch) {
+      try {
+        const nextData = JSON.parse(nextMatch[1]);
+        const found = walkForDestination(nextData);
+        if (found) {
+          log("[+] Found in __NEXT_DATA__", "ok");
+          return found;
+        }
+      } catch { /* malformed JSON, fall through */ }
+    }
+
+    log("[*] __NEXT_DATA__ miss. Extracting key...", "warn");
+
+    const key = extractKey(url, html);
+    if (!key) {
+      // Last resort: regex sweep the raw HTML for any external URL
+      log("[*] No key found. Sweeping HTML for destination URLs...", "warn");
+      const swept = sweepHTML(html);
+      if (swept) {
+        log("[+] Swept from raw HTML", "ok");
+        return swept;
+      }
+      return "[!] Could not extract content key";
+    }
+
+    log(`[*] Key: ${key}. Probing API...`, "step");
+    return await apiResolve(key, url);
+  }
+
+  function walkForDestination(obj) {
+    if (!obj || typeof obj !== "object") return null;
+    const fields = ["destination", "url", "link", "redirect", "target", "href", "redirectUrl", "finalUrl", "dest"];
+    const blocked = /lootlabs|lootlink|google|facebook|cloudflare|gtag|cdn\.|static\.|_next|vercel/i;
+
+    for (const f of fields) {
+      if (typeof obj[f] === "string" && obj[f].startsWith("http") && !blocked.test(obj[f])) {
+        return obj[f];
+      }
+    }
+    for (const key of Object.keys(obj)) {
+      const result = walkForDestination(obj[key]);
+      if (result) return result;
+    }
+    return null;
+  }
+
+  function extractKey(url, html) {
+    const parsed = new URL(url);
+
+    // Priority 1: unnamed first query param (e.g. ?QXdKuPBJ&data=...)
+    // The key is the param with no value, or the first param name itself
+    for (const [name, value] of parsed.searchParams.entries()) {
+      // If param name looks like a key (alphanum, 6-16 chars) and value is empty or base64
+      if (/^[a-zA-Z0-9_-]{6,20}$/.test(name) && (value === "" || value.length > 10)) {
+        return name;
+      }
+    }
+
+    // Priority 2: named params
+    for (const param of ["key", "id", "c", "ref", "token", "s", "code"]) {
+      const val = parsed.searchParams.get(param);
+      if (val && val.length > 3) return val;
+    }
+
+    // Priority 3: last path segment
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts.length > 0) {
+      const last = parts[parts.length - 1];
+      if (last.length > 4) return last;
+    }
+
+    // Priority 4: inline JS
+    const match = html.match(/['"](?:key|code|id)['"]\s*:\s*['"]([a-zA-Z0-9_-]{6,})['"]/);
     if (match) return match[1];
 
     return null;
   }
 
+  function sweepHTML(html) {
+    const blocked = /lootlabs|lootlink|google|facebook|cloudflare|gtag|cdn\.|static\.|_next|vercel|twitter|discord\.gg/i;
+    const urls = [...html.matchAll(/https?:\/\/[^\s"'\\<>]{10,}/g)].map(m => m[0]);
+    const clean = urls.filter(u => !blocked.test(u));
+    return clean[0] || null;
+  }
+
   async function apiResolve(key, referer) {
-    const base = referer.includes("lootlabs") ? "https://lootlabs.gg" : "https://lootlink.org";
+    const parsed = new URL(referer);
+    const base = parsed.hostname.includes("lootlabs")
+      ? "https://lootlabs.gg"
+      : "https://lootlink.org";
+
+    // Also try the links subdomain directly
+    const linksBase = parsed.hostname.includes("lootlabs")
+      ? "https://links.lootlabs.gg"
+      : "https://links.lootlink.org";
 
     const endpoints = [
+      `${linksBase}/api/resolve?key=${key}`,
+      `${linksBase}/api/s/${key}`,
       `${base}/api/content/${key}`,
       `${base}/api/links/${key}`,
       `${base}/api/v1/links/${key}/destination`,
@@ -370,28 +531,25 @@
     const proxyBase = "https://api.allorigins.win/get?url=";
 
     for (const ep of endpoints) {
-      log(`[*] Trying ${ep}`, "step");
+      log(`[*] Trying ${ep.replace(/https?:\/\/[^/]+/, '')}`, "step");
       try {
-        await sleep(800 + Math.random() * 1200);
-
+        await sleep(600 + Math.random() * 900);
         const resp = await fetch(proxyBase + encodeURIComponent(ep));
         if (!resp.ok) continue;
-
         const wrapper = await resp.json();
         if (!wrapper.contents) continue;
-
         let data;
         try { data = JSON.parse(wrapper.contents); } catch { continue; }
 
-        const fields = ["destination", "url", "link", "redirect", "href", "target"];
+        const fields = ["destination", "url", "link", "redirect", "href", "target", "redirectUrl", "finalUrl"];
         for (const f of fields) {
-          if (data[f] && typeof data[f] === "string") return data[f];
-          if (data.data && data.data[f]) return data.data[f];
+          if (data[f] && typeof data[f] === "string" && data[f].startsWith("http")) return data[f];
+          if (data.data && data.data[f] && typeof data.data[f] === "string") return data.data[f];
         }
       } catch { continue; }
     }
 
-    return "[!] API resolve failed — schema may have rotated";
+    return "[!] API resolve failed — paste the full URL from the address bar including all query params";
   }
 
   function sleep(ms) {
