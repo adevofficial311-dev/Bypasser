@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LootLabs Bypasser</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  
+  body {
+    background: #0a0a0f;
+    color: #e0e0e0;
+    font-family: 'Courier New', monospace;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  .container {
+    width: 100%;
+    max-width: 680px;
+  }
+
+  .header {
+    text-align: center;
+    margin-bottom: 36px;
+  }
+
+  .header h1 {
+    font-size: 1.4rem;
+    color: #ffffff;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  .header p {
+    color: #555;
+    font-size: 0.75rem;
+    margin-top: 6px;
+    letter-spacing: 0.08em;
+  }
+
+  .card {
+    background: #111118;
+    border: 1px solid #1e1e2e;
+    border-radius: 10px;
+    padding: 28px;
+  }
+
+  .input-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+
+  input[type="text"] {
+    flex: 1;
+    background: #0d0d14;
+    border: 1px solid #2a2a3e;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+    padding: 12px 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  input[type="text"]:focus {
+    border-color: #5c5cff;
+  }
+
+  input[type="text"]::placeholder {
+    color: #333;
+  }
+
+  button {
+    background: #5c5cff;
+    border: none;
+    border-radius: 6px;
+    color: #fff;
+    cursor: pointer;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+    font-weight: bold;
+    letter-spacing: 0.05em;
+    padding: 12px 22px;
+    transition: background 0.2s;
+    white-space: nowrap;
+  }
+
+  button:hover { background: #4a4ae0; }
+  button:disabled { background: #2a2a4a; cursor: not-allowed; }
+
+  .log {
+    background: #0d0d14;
+    border: 1px solid #1a1a2a;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    min-height: 160px;
+    padding: 14px;
+    overflow-y: auto;
+    max-height: 320px;
+  }
+
+  .log-line {
+    margin-bottom: 6px;
+    line-height: 1.5;
+  }
+
+  .log-info  { color: #888; }
+  .log-step  { color: #5c5cff; }
+  .log-ok    { color: #3ecf8e; }
+  .log-err   { color: #ff4d4d; }
+  .log-warn  { color: #f0a500; }
+
+  .result-box {
+    display: none;
+    margin-top: 16px;
+    background: #0d1a12;
+    border: 1px solid #1e4a2a;
+    border-radius: 6px;
+    padding: 14px;
+    word-break: break-all;
+  }
+
+  .result-box.visible { display: block; }
+
+  .result-label {
+    color: #3ecf8e;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .result-url {
+    color: #e0e0e0;
+    font-size: 0.85rem;
+    margin-bottom: 12px;
+  }
+
+  .result-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .btn-sm {
+    background: #1a1a2e;
+    border: 1px solid #2a2a4e;
+    border-radius: 4px;
+    color: #aaa;
+    cursor: pointer;
+    font-family: 'Courier New', monospace;
+    font-size: 0.75rem;
+    padding: 6px 12px;
+    transition: all 0.15s;
+  }
+
+  .btn-sm:hover {
+    background: #2a2a4e;
+    color: #fff;
+  }
+
+  .btn-open {
+    background: #5c5cff22;
+    border-color: #5c5cff55;
+    color: #8888ff;
+  }
+
+  .btn-open:hover {
+    background: #5c5cff44;
+    color: #fff;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="header">
+    <h1>LootLabs Bypasser</h1>
+    <p>lootlabs.gg &nbsp;·&nbsp; lootlink.org</p>
+  </div>
+
+  <div class="card">
+    <div class="input-row">
+      <input type="text" id="urlInput" placeholder="https://lootlabs.gg/..." />
+      <button id="bypassBtn" onclick="runBypass()">BYPASS</button>
+    </div>
+
+    <div class="log" id="log">
+      <div class="log-line log-info">// Ready. Paste a URL and hit bypass.</div>
+    </div>
+
+    <div class="result-box" id="resultBox">
+      <div class="result-label">Destination Resolved</div>
+      <div class="result-url" id="resultUrl"></div>
+      <div class="result-actions">
+        <button class="btn-sm" onclick="copyResult()">Copy URL</button>
+        <button class="btn-sm btn-open" onclick="openResult()">Open Link</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let lastResult = "";
+
+  function log(msg, type = "info") {
+    const box = document.getElementById("log");
+    const line = document.createElement("div");
+    line.className = `log-line log-${type}`;
+    line.textContent = msg;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function clearLog() {
+    document.getElementById("log").innerHTML = "";
+    document.getElementById("resultBox").classList.remove("visible");
+    lastResult = "";
+  }
+
+  function showResult(url) {
+    lastResult = url;
+    document.getElementById("resultUrl").textContent = url;
+    document.getElementById("resultBox").classList.add("visible");
+  }
+
+  function copyResult() {
+    if (!lastResult) return;
+    navigator.clipboard.writeText(lastResult).then(() => {
+      log("[+] Copied to clipboard.", "ok");
+    });
+  }
+
+  function openResult() {
+    if (!lastResult) return;
+    window.open(lastResult, "_blank", "noopener");
+  }
+
+  async function runBypass() {
+    const url = document.getElementById("urlInput").value.trim();
+    if (!url) return;
+
+    clearLog();
+    document.getElementById("bypassBtn").disabled = true;
+
+    log(`[*] Target: ${url}`, "step");
+
+    try {
+      const result = await bypass(url);
+      if (result.startsWith("[!]")) {
+        log(result, "err");
+      } else {
+        log(`[+] Resolved: ${result}`, "ok");
+        showResult(result);
+      }
+    } catch (e) {
+      log(`[!] Fatal: ${e.message}`, "err");
+    }
+
+    document.getElementById("bypassBtn").disabled = false;
+  }
+
+  async function bypass(url) {
+    const parsed = new URL(url);
+    const host = parsed.hostname;
+
+    if (!host.includes("lootlabs") && !host.includes("lootlink")) {
+      return "[!] Unsupported domain: " + host;
+    }
+
+    // Use allorigins CORS proxy to fetch the page
+    const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+    log("[*] Fetching page via proxy...", "step");
+
+    const pageResp = await fetch(proxy);
+    if (!pageResp.ok) throw new Error("Proxy fetch failed: " + pageResp.status);
+
+    const pageData = await pageResp.json();
+    const html = pageData.contents;
+
+    if (!html) return "[!] Empty page response";
+
+    log("[*] Page fetched. Scanning __NEXT_DATA__...", "step");
+
+    // Try __NEXT_DATA__
+    const nextMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
+    if (nextMatch) {
+      const nextData = JSON.parse(nextMatch[1]);
+      const found = walkForDestination(nextData);
+      if (found) {
+        log("[+] Found in __NEXT_DATA__", "ok");
+        return found;
+      }
+    }
+
+    log("[*] __NEXT_DATA__ miss. Extracting key...", "warn");
+
+    // Extract key from path or inline JS
+    const key = extractKey(url, html);
+    if (!key) return "[!] Could not extract content key";
+
+    log(`[*] Key: ${key}. Probing API...`, "step");
+    return await apiResolve(key, url);
+  }
+
+  function walkForDestination(obj) {
+    if (!obj || typeof obj !== "object") return null;
+
+    const fields = ["destination", "url", "link", "redirect", "target", "href"];
+
+    // Check current level
+    for (const f of fields) {
+      if (typeof obj[f] === "string" && obj[f].startsWith("http")) {
+        // Filter out CDN/static/tracking
+        const val = obj[f];
+        if (!val.match(/lootlabs|lootlink|google|facebook|cloudflare|gtag|cdn\.|static\./i)) {
+          return val;
+        }
+      }
+    }
+
+    // Recurse
+    for (const key of Object.keys(obj)) {
+      const result = walkForDestination(obj[key]);
+      if (result) return result;
+    }
+
+    return null;
+  }
+
+  function extractKey(url, html) {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+
+    // Last path segment
+    if (parts.length > 0) {
+      const last = parts[parts.length - 1];
+      if (last.length > 4) return last;
+    }
+
+    // Query param
+    for (const param of ["key", "id", "c", "ref", "token"]) {
+      const val = parsed.searchParams.get(param);
+      if (val) return val;
+    }
+
+    // Inline JS
+    const match = html.match(/['"]key['"]\s*:\s*['"]([a-zA-Z0-9_-]{6,})['"]/);
+    if (match) return match[1];
+
+    return null;
+  }
+
+  async function apiResolve(key, referer) {
+    const base = referer.includes("lootlabs") ? "https://lootlabs.gg" : "https://lootlink.org";
+
+    const endpoints = [
+      `${base}/api/content/${key}`,
+      `${base}/api/links/${key}`,
+      `${base}/api/v1/links/${key}/destination`,
+      `${base}/api/v2/content/${key}`,
+    ];
+
+    const proxyBase = "https://api.allorigins.win/get?url=";
+
+    for (const ep of endpoints) {
+      log(`[*] Trying ${ep}`, "step");
+      try {
+        await sleep(800 + Math.random() * 1200);
+
+        const resp = await fetch(proxyBase + encodeURIComponent(ep));
+        if (!resp.ok) continue;
+
+        const wrapper = await resp.json();
+        if (!wrapper.contents) continue;
+
+        let data;
+        try { data = JSON.parse(wrapper.contents); } catch { continue; }
+
+        const fields = ["destination", "url", "link", "redirect", "href", "target"];
+        for (const f of fields) {
+          if (data[f] && typeof data[f] === "string") return data[f];
+          if (data.data && data.data[f]) return data.data[f];
+        }
+      } catch { continue; }
+    }
+
+    return "[!] API resolve failed — schema may have rotated";
+  }
+
+  function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
+
+  document.getElementById("urlInput").addEventListener("keydown", e => {
+    if (e.key === "Enter") runBypass();
+  });
+</script>
+</body>
+</html>
