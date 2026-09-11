@@ -106,7 +106,7 @@
   </div>
   <div class="card">
     <div class="input-row">
-      <input type="text" id="urlInput" placeholder="https://lootlabs.gg/..." />
+      <input type="text" id="urlInput" placeholder="https://lootlabs.gg/... or https://links.lootlabs.gg/s?..." />
       <button id="bypassBtn" onclick="runBypass()">BYPASS</button>
     </div>
     <div class="log" id="log">
@@ -125,6 +125,44 @@
 
 <script>
   let lastResult = "";
+
+  // Proxy chain — tried in order until one succeeds
+  const PROXIES = [
+    url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+    url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+    url => `https://thingproxy.freeboard.io/fetch/${url}`,
+  ];
+
+  // Fetch through proxy chain — returns { html, proxyIndex } or throws
+  async function proxyFetch(targetUrl) {
+    let lastErr = null;
+    for (let i = 0; i < PROXIES.length; i++) {
+      const proxyUrl = PROXIES[i](targetUrl);
+      try {
+        const resp = await Promise.race([
+          fetch(proxyUrl),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
+        ]);
+        if (!resp.ok) { lastErr = `HTTP ${resp.status}`; continue; }
+        const raw = await resp.text();
+        // allorigins wraps in JSON; others return raw HTML
+        let html = raw;
+        if (i === 0) {
+          try {
+            const parsed = JSON.parse(raw);
+            html = parsed.contents || raw;
+          } catch { /* raw text */ }
+        }
+        if (!html || html.length < 200) { lastErr = "empty response"; continue; }
+        return { html, proxyIndex: i };
+      } catch (e) {
+        lastErr = e.message;
+        log(`[*] Proxy ${i + 1} failed: ${e.message}`, "warn");
+      }
+    }
+    throw new Error(`All proxies failed. Last: ${lastErr}`);
+  }
 
   function log(msg, type = "info") {
     const box = document.getElementById("log");
@@ -185,17 +223,16 @@
       return "[!] Unsupported domain: " + host;
     }
 
-    const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-    log("[*] Fetching page via proxy...", "step");
+    log("[*] Fetching page through proxy chain...", "step");
+    let html, proxyIndex;
+    try {
+      ({ html, proxyIndex } = await proxyFetch(url));
+      log(`[+] Page fetched via proxy ${proxyIndex + 1} (${html.length} bytes)`, "ok");
+    } catch (e) {
+      return `[!] ${e.message}`;
+    }
 
-    const pageResp = await fetch(proxy);
-    if (!pageResp.ok) throw new Error("Proxy fetch failed: " + pageResp.status);
-
-    const pageData = await pageResp.json();
-    const html = pageData.contents;
-    if (!html) return "[!] Empty page response";
-
-    log("[*] Page fetched. Scanning __NEXT_DATA__...", "step");
+    log("[*] Scanning __NEXT_DATA__...", "step");
 
     // Pass 1: __NEXT_DATA__ JSON walk
     const nextMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
@@ -210,7 +247,7 @@
       } catch { /* malformed JSON, fall through */ }
     }
 
-    // Pass 2: deep HTML sweep — catches window.location, JS assignments, data- attrs
+    // Pass 2: deep HTML sweep
     log("[*] __NEXT_DATA__ miss. Deep sweeping HTML...", "warn");
     const deepSwept = deepSweepHTML(html);
     if (deepSwept) {
@@ -232,10 +269,9 @@
     }
 
     log(`[*] Key: ${key}. Probing API...`, "step");
-    return await apiResolve(key, url);
+    return await apiResolve(key, url, proxyIndex);
   }
 
-  // Walk __NEXT_DATA__ JSON tree for destination fields
   function walkForDestination(obj) {
     if (!obj || typeof obj !== "object") return null;
     const fields = ["destination", "url", "link", "redirect", "target", "href", "redirectUrl", "finalUrl", "dest"];
@@ -253,20 +289,14 @@
     return null;
   }
 
-  // Deep HTML sweep — JS assignments, window.location, data- attrs, meta refresh
   function deepSweepHTML(html) {
     const blocked = /lootlabs|lootlink|google|facebook|cloudflare|gtag|cdn\.|static\.|_next|vercel|twitter|discord\.gg|schema\.org|w3\.org/i;
 
     const patterns = [
-      // JS variable / object field assignments
       /(?:destination|url|link|redirect|href|target|finalUrl|redirectUrl)\s*[=:]\s*["'`](https?:\/\/[^"'`\s]{8,})["'`]/gi,
-      // data- HTML attributes
       /data-(?:href|url|destination|link|redirect)\s*=\s*["'](https?:\/\/[^"'\s]{8,})["']/gi,
-      // window.location assignments
       /window\.location(?:\.href)?\s*=\s*["'`](https?:\/\/[^"'`\s]{8,})["'`]/gi,
-      // meta refresh / redirect
       /content\s*=\s*["']\d+;\s*url=(https?:\/\/[^"'\s]{8,})["']/gi,
-      // React/Next props: "destination":"https://..."
       /"(?:destination|redirectUrl|finalUrl|target|href)"\s*:\s*"(https?:\/\/[^"]{8,})"/gi,
     ];
 
@@ -277,51 +307,43 @@
       }
     }
 
-    // Final fallback: any URL not on blocklist
     const urls = [...html.matchAll(/https?:\/\/[^\s"'\\<>{}\[\]]{12,}/g)].map(m => m[0]);
     return urls.find(u => !blocked.test(u)) || null;
   }
 
-  // Basic URL sweep — original fallback
   function sweepHTML(html) {
     const blocked = /lootlabs|lootlink|google|facebook|cloudflare|gtag|cdn\.|static\.|_next|vercel|twitter|discord\.gg/i;
     const urls = [...html.matchAll(/https?:\/\/[^\s"'\\<>]{10,}/g)].map(m => m[0]);
     return urls.find(u => !blocked.test(u)) || null;
   }
 
-  // Extract the content key from URL params or HTML
   function extractKey(url, html) {
     const parsed = new URL(url);
 
-    // Priority 1: valueless first query param — e.g. ?QXdKuPBJ&data=...
     for (const [name, value] of parsed.searchParams.entries()) {
       if (/^[a-zA-Z0-9_-]{6,20}$/.test(name) && (value === "" || value.length > 10)) {
         return name;
       }
     }
 
-    // Priority 2: named params
     for (const param of ["key", "id", "c", "ref", "token", "s", "code"]) {
       const val = parsed.searchParams.get(param);
       if (val && val.length > 3) return val;
     }
 
-    // Priority 3: last path segment
     const parts = parsed.pathname.split("/").filter(Boolean);
     if (parts.length > 0) {
       const last = parts[parts.length - 1];
       if (last.length > 4) return last;
     }
 
-    // Priority 4: inline JS
     const match = html.match(/['"](?:key|code|id)['"]\s*:\s*['"]([a-zA-Z0-9_-]{6,})['"]/);
     if (match) return match[1];
 
     return null;
   }
 
-  // API endpoint probe
-  async function apiResolve(key, referer) {
+  async function apiResolve(key, referer, workingProxyIndex = 0) {
     const parsed = new URL(referer);
     const base = parsed.hostname.includes("lootlabs") ? "https://lootlabs.gg" : "https://lootlink.org";
     const linksBase = parsed.hostname.includes("lootlabs") ? "https://links.lootlabs.gg" : "https://links.lootlink.org";
@@ -335,18 +357,34 @@
       `${base}/api/v2/content/${key}`,
     ];
 
-    const proxyBase = "https://api.allorigins.win/get?url=";
-
     for (const ep of endpoints) {
       log(`[*] Trying ${ep.replace(/https?:\/\/[^/]+/, '')}`, "step");
       try {
         await sleep(600 + Math.random() * 900);
-        const resp = await fetch(proxyBase + encodeURIComponent(ep));
-        if (!resp.ok) continue;
-        const wrapper = await resp.json();
-        if (!wrapper.contents) continue;
+
+        // Try working proxy first, then fall through chain
+        let html = null;
+        for (let pi = workingProxyIndex; pi < PROXIES.length; pi++) {
+          try {
+            const proxyUrl = PROXIES[pi](ep);
+            const resp = await Promise.race([
+              fetch(proxyUrl),
+              new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
+            ]);
+            if (!resp.ok) continue;
+            const raw = await resp.text();
+            if (pi === 0) {
+              try { html = JSON.parse(raw).contents; } catch { html = raw; }
+            } else {
+              html = raw;
+            }
+            if (html && html.length > 10) break;
+          } catch { continue; }
+        }
+
+        if (!html) continue;
         let data;
-        try { data = JSON.parse(wrapper.contents); } catch { continue; }
+        try { data = JSON.parse(html); } catch { continue; }
 
         const fields = ["destination", "url", "link", "redirect", "href", "target", "redirectUrl", "finalUrl"];
         for (const f of fields) {
