@@ -197,6 +197,7 @@
 
     log("[*] Page fetched. Scanning __NEXT_DATA__...", "step");
 
+    // Pass 1: __NEXT_DATA__ JSON walk
     const nextMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
     if (nextMatch) {
       try {
@@ -209,23 +210,32 @@
       } catch { /* malformed JSON, fall through */ }
     }
 
-    log("[*] __NEXT_DATA__ miss. Extracting key...", "warn");
+    // Pass 2: deep HTML sweep — catches window.location, JS assignments, data- attrs
+    log("[*] __NEXT_DATA__ miss. Deep sweeping HTML...", "warn");
+    const deepSwept = deepSweepHTML(html);
+    if (deepSwept) {
+      log("[+] Found via deep HTML sweep", "ok");
+      return deepSwept;
+    }
 
+    // Pass 3: key extraction + API probe
+    log("[*] Deep sweep miss. Extracting key...", "warn");
     const key = extractKey(url, html);
     if (!key) {
-      log("[*] No key found. Sweeping HTML for destination URLs...", "warn");
+      log("[*] No key found. Falling back to raw URL sweep...", "warn");
       const swept = sweepHTML(html);
       if (swept) {
         log("[+] Swept from raw HTML", "ok");
         return swept;
       }
-      return "[!] Could not extract content key";
+      return "[!] Could not extract content key — destination not found in page";
     }
 
     log(`[*] Key: ${key}. Probing API...`, "step");
     return await apiResolve(key, url);
   }
 
+  // Walk __NEXT_DATA__ JSON tree for destination fields
   function walkForDestination(obj) {
     if (!obj || typeof obj !== "object") return null;
     const fields = ["destination", "url", "link", "redirect", "target", "href", "redirectUrl", "finalUrl", "dest"];
@@ -243,6 +253,43 @@
     return null;
   }
 
+  // Deep HTML sweep — JS assignments, window.location, data- attrs, meta refresh
+  function deepSweepHTML(html) {
+    const blocked = /lootlabs|lootlink|google|facebook|cloudflare|gtag|cdn\.|static\.|_next|vercel|twitter|discord\.gg|schema\.org|w3\.org/i;
+
+    const patterns = [
+      // JS variable / object field assignments
+      /(?:destination|url|link|redirect|href|target|finalUrl|redirectUrl)\s*[=:]\s*["'`](https?:\/\/[^"'`\s]{8,})["'`]/gi,
+      // data- HTML attributes
+      /data-(?:href|url|destination|link|redirect)\s*=\s*["'](https?:\/\/[^"'\s]{8,})["']/gi,
+      // window.location assignments
+      /window\.location(?:\.href)?\s*=\s*["'`](https?:\/\/[^"'`\s]{8,})["'`]/gi,
+      // meta refresh / redirect
+      /content\s*=\s*["']\d+;\s*url=(https?:\/\/[^"'\s]{8,})["']/gi,
+      // React/Next props: "destination":"https://..."
+      /"(?:destination|redirectUrl|finalUrl|target|href)"\s*:\s*"(https?:\/\/[^"]{8,})"/gi,
+    ];
+
+    for (const pat of patterns) {
+      for (const m of html.matchAll(pat)) {
+        const u = m[1];
+        if (u && !blocked.test(u)) return u;
+      }
+    }
+
+    // Final fallback: any URL not on blocklist
+    const urls = [...html.matchAll(/https?:\/\/[^\s"'\\<>{}\[\]]{12,}/g)].map(m => m[0]);
+    return urls.find(u => !blocked.test(u)) || null;
+  }
+
+  // Basic URL sweep — original fallback
+  function sweepHTML(html) {
+    const blocked = /lootlabs|lootlink|google|facebook|cloudflare|gtag|cdn\.|static\.|_next|vercel|twitter|discord\.gg/i;
+    const urls = [...html.matchAll(/https?:\/\/[^\s"'\\<>]{10,}/g)].map(m => m[0]);
+    return urls.find(u => !blocked.test(u)) || null;
+  }
+
+  // Extract the content key from URL params or HTML
   function extractKey(url, html) {
     const parsed = new URL(url);
 
@@ -273,12 +320,7 @@
     return null;
   }
 
-  function sweepHTML(html) {
-    const blocked = /lootlabs|lootlink|google|facebook|cloudflare|gtag|cdn\.|static\.|_next|vercel|twitter|discord\.gg/i;
-    const urls = [...html.matchAll(/https?:\/\/[^\s"'\\<>]{10,}/g)].map(m => m[0]);
-    return urls.find(u => !blocked.test(u)) || null;
-  }
-
+  // API endpoint probe
   async function apiResolve(key, referer) {
     const parsed = new URL(referer);
     const base = parsed.hostname.includes("lootlabs") ? "https://lootlabs.gg" : "https://lootlink.org";
